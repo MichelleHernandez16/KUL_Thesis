@@ -308,9 +308,13 @@ ggplot(df, aes(x = debut_group,
 model <- lm(career_lenght_w_actives_and_dead ~ debut_age_transfermarket, data = df)
 summary(model)
 
+
+##ccheck for differences by postition as well:
+
 #P is highly sig
 # Each year later a player debuts, their career is 0.46 years shorter
 # Only 9.9% of career length variance is explained by debut age alone??? ( low R2) check interpretations
+
 
 
 
@@ -408,6 +412,73 @@ summary(anova_result)
 
 # F-value = 4.839 with p = 0.00233 seems there differences between lenght and positions, but R2 is small (151)
 
+library(ggplot2)
+library(patchwork)   # install.packages("patchwork")
+
+df_pos <- df %>%
+  filter(position_simple %in% c("Goalkeeper", "Defender", "Midfield", "Attack"))
+
+
+df_pos_debut <- df %>%
+  filter(!is.na(debut_age_transfermarket),
+         !is.na(position_simple))
+
+# compute order by mean debut age
+pos_order <- df_pos_debut %>%
+  group_by(position_simple) %>%
+  summarise(mean_debut = mean(debut_age_transfermarket, na.rm = TRUE)) %>%
+  arrange(mean_debut) %>%
+  pull(position_simple)
+
+ggplot(df_pos_debut,
+       aes(x = factor(position_simple, levels = pos_order),
+           y = debut_age_transfermarket,
+           fill = position_simple)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.4) +
+  labs(
+    title = "Debut Age by Position (ordered by mean)",
+    x = "Position",
+    y = "Debut Age (years)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+ggplot(df_pos_debut,
+       aes(x = factor(position_simple, levels = pos_order),
+           y = debut_age_transfermarket,
+           fill = position_simple)) +
+  geom_boxplot(alpha = 0.6, outlier.alpha = 0.3) +
+  stat_summary(fun = "mean",
+               geom = "point",
+               shape = 21,
+               size = 3,
+               fill = "white",
+               color = "black") +
+  labs(
+    title = "Debut Age by Position (median + mean point)",
+    x = "Position",
+    y = "Debut Age (years)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+p1 <- ggplot(df, aes(x = position_simple, y = debut_age_transfermarket, fill = position_simple)) +
+  geom_boxplot(alpha = 0.7, na.rm = TRUE) +
+  labs(title = "Debut Age by Position", x = "Position", y = "Debut Age") +
+  theme_minimal() + theme(legend.position = "none")
+
+
+p2 <- ggplot(df <- df %>%
+  filter(!is.na(career_lenght_w_actives_and_dead),
+         !is.na(debut_age_transfermarket))
+df, aes(x = position_simple, y = career_lenght_w_actives_and_dead, fill = position_simple)) +
+  geom_boxplot(alpha = 0.7, na.rm = TRUE) +
+  labs(title = "Career Length by Position", x = "Position", y = "Career Length (Years)") +
+  theme_minimal() + theme(legend.position = "none")
+
+p1 + p2   # patchwork stacks them nicely
 
 
 #Maybe foot?
@@ -732,6 +803,8 @@ ggplot(df %>% filter(!is.na(games_missed_total_tra)),
         legend.position = "none")
 
 ##CHeck the bins, not a good separation I think
+
+
 
 
 
