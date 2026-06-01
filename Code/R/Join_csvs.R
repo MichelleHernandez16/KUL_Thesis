@@ -482,3 +482,53 @@ file.exists("C:/git/Thesis/Data/Premier/Premier_revised/final_dataset/premier_si
 
 
 
+###For the full detailed csvs 
+full_df <- read.csv("premier_career_history_full.csv")
+simple_df <- read.csv("premier_simple.csv")
+
+
+#Clean performance dataset
+
+# # Sum all types of competition
+# performance_season <- full_df %>%
+#   group_by(National_tem_stat, player_url, player_name, season_simple) %>%
+#   summarise(
+#     season_year = as.numeric(str_extract(season_simple, "^[0-9]{4}")),
+#     matches_played = sum(matches_played, na.rm = TRUE),
+#     minutes_played = sum(minutes, na.rm = TRUE),
+#     goals = sum(goals, na.rm = TRUE),
+#     assists = sum(assists, na.rm = TRUE),
+#     n_competitions = n_distinct(competition),
+#     played_european = any(grepl("UEFA|Champions|Europa", competition)),
+#     played_top_tier = any(grepl("Premier League|La Liga|Bundesliga|Serie A|Ligue 1", 
+#                                 competition)),
+#     main_squad = squad[which.max(matches_played)],
+#     .groups = "drop"
+#   ) %>%
+#   # Arrange per player_url y season_year
+#   arrange(player_url, season_year) %>%
+#   # Calculate first season
+#   group_by(player_url) %>%
+#   mutate(
+#     first_season = min(season_year)
+#     # 
+#   ) %>%
+#   ungroup()
+# 
+# glimpse(performance_season)
+
+
+
+
+premier_career <- full_df %>%
+  left_join(simple_df,
+            by = c("player_url" = "fbref_url"),
+            relationship = "many-to-many")
+
+
+#save csv
+write.csv(premier_career,
+          "C:/git/Thesis/Data/Premier/Premier_revised/final_dataset/time_dependent/premier_career_time.csv",
+          row.names = FALSE)
+file.exists("C:/git/Thesis/Data/Premier/Premier_revised/final_dataset/time_dependent/premier_career_time.csv")
+

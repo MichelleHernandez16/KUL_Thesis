@@ -11,12 +11,13 @@
 library(dplyr)
 library(stringr)
 library(lubridate)
-
+library(readr)
 
 ### Load data
 -
 
 # Adjust path if needed; here assumed in working directory
+  setwd("C:/git/Thesis/Data")
 df<- read_csv("la_liga_stats_2010_2015_depured.csv",
                 show_col_types = FALSE)
 names(df)
@@ -92,21 +93,32 @@ df2 <- df2 %>%
   )
 
 
+#calculate agecurrent considering cases where dob age is NA
+df2 <- df2 %>%
+  mutate(
+    year_birth = suppressWarnings(as.integer(parse_number(as.character(YEAR_tra)))),
+    age_current = case_when(
+      !is.na(dob) ~ floor(interval(dob, today()) / years(1)),
+      is.na(dob) & !is.na(year_birth) ~ year(today()) - year_birth,
+      TRUE ~ NA_real_
+    )
+  )
+
+df2 %>% summarise(
+  na_dob = sum(is.na(dob)),
+  na_age_current = sum(is.na(age_current))
+)
+
+
 df2 <- df2 %>%
   mutate(
     retirement_date = na_if(trimws(retirement_date_tra), ""),
     retirement_date_clean = dmy(retirement_date_tra, quiet = TRUE)
   )
 
-
+#rename retirement age column
 df2 <- df2 %>%
-  mutate(
-    retirement_age = case_when(
-      retired_tra == "Yes" & !is.na(dob) & !is.na(retirement_date_clean) ~
-        floor(interval(dob, retirement_date_clean) / years(1)),
-      TRUE ~ NA_real_
-    )
-  )
+  rename(retirement_age = `retirement age`)
 
 
 #Now career_lenght
