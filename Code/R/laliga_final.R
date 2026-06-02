@@ -15,11 +15,13 @@ library(tidyr)      # Reshaping data (replace_na, etc.)
 library(stringr)    # String parsing and cleaning
 library(lubridate)  # Date parsing for injury tracking
 library(readr)      # Fast file reading
-library(ggplot2)    # Core visualization
+library(glmnet)
 library(patchwork)  # Combining ggplot panels (p1 | p2 / p3)
 library(survival)   # Core survival models (Cox, AFT, cluster, strata, tt, pspline)
 library(survminer)  # Enhanced survival model visualizations
 library(flexsurv)   # AFT
+library(ggplot2)    # Core visualization
+  
 })
 
 # Set seed for reproducibility
@@ -179,15 +181,15 @@ cat("\n--- Generating Univariate & Bivariate Exploratory Plots ---\n")
 
 shared_theme <- theme_minimal() +
   theme(
-    plot.title    = element_text(size = 20, face = "bold",   hjust = 0.5, margin = margin(b = 4)),
-    plot.subtitle = element_text(size = 15, face = "italic", hjust = 0.5, color = "gray40", margin = margin(b = 12)),
-    axis.title.x  = element_text(size = 18, face = "bold", margin = margin(t = 12)),
-    axis.title.y  = element_text(size = 18, face = "bold", margin = margin(r = 12)),
+    plot.title    = element_text(size = 20, face = "bold",   hjust = 0.5, margin = ggplot2::margin(b = 4)),
+    plot.subtitle = element_text(size = 15, face = "italic", hjust = 0.5, color = "gray40", margin = ggplot2::margin(b = 12)),
+    axis.title.x  = element_text(size = 18, face = "bold", margin = ggplot2::margin(t = 12)),
+    axis.title.y  = element_text(size = 18, face = "bold", margin = ggplot2::margin(r = 12)),
     axis.text.x   = element_text(size = 15),
     axis.text.y   = element_text(size = 15),
     panel.grid.minor = element_blank(),
     panel.grid.major = element_line(color = "gray90", linewidth = 0.5),
-    plot.margin   = margin(25, 25, 25, 25)
+    plot.margin   = ggplot2::margin(25, 25, 25, 25)
   )
 
 # ------------------------------------------------------------------------------
@@ -1136,13 +1138,6 @@ abline(h = 0, lty = 2)
 # SECTION 10:MULTI-STATE MODEL FOR TRANSITIONS BETWEEN STATES
 
 # ==============================================================================
-
-library(dplyr)
-library(tidyr)
-library(survival)
-library(ggplot2)
-
-  
   # STEP 1: MAKE SURE ever_had_acl IS JOINED TO td_df_full FIRST
   
   
@@ -1344,8 +1339,362 @@ library(ggplot2)
   print(transitions)
   
   
+
   
-  exp(confint(cox_injury))
-  exp(confint(cox_retire_direct))
-  exp(confint(cox_recovery))
-  exp(confint(cox_retire_injured))
+  
+  # ==============================================================================
+  # 11: Baseline ML Models & Robustness Checks (EPL)
+  #        Penalized Cox + Random Forest on Static Baseline Data
+  # ==============================================================================
+  
+  
+  cat("\n--- SECTION 10: Baseline ML Models (Penalized Cox & RF Regression) ---\n")
+  
+  # ----------------------------------------------------------------------
+  # 10.1 Data setup: baseline feature matrix and train/test split
+  # ----------------------------------------------------------------------
+  
+  library(glmnet)
+  library(randomForest)
+  library(survival)
+  
+  # Response for survival models
+  y_surv <- with(surv_df_liga, Surv(time = career_length, event = event))
+  
+  # Baseline covariates: align with your static Cox model
+  x_vars <- surv_df_liga %>%
+    dplyr::select(
+      position_simple,
+      debut_age_num,
+      height_clean,
+      region,
+      National_team,
+      foot_clean,
+      injuries_per_season
+    )
+  
+  # Design matrix (one-hot encoded factors, no intercept)
+  x_mat <- model.matrix(~ . , data = x_vars)[, -1]
+  
+  # Split by player to avoid leakage across observations of same player
+  set.seed(123)
+  player_ids  <- surv_df_liga$player_url
+  unique_ids  <- unique(player_ids)
+  train_ids   <- sample(unique_ids, size = floor(0.7 * length(unique_ids)))
+  
+  train_idx <- player_ids %in% train_ids
+  test_idx  <- !train_idx
+  
+  x_train <- x_mat[train_idx, ]
+  x_test  <- x_mat[test_idx, ]
+  y_train <- y_surv[train_idx]
+  y_test  <- y_surv[test_idx]
+  
+  # ----------------------------------------------------------------------
+  # 11.2 Penalized Cox model (elastic net) on baseline covariates
+  # ----------------------------------------------------------------------
+  
+  cat("\n--- 10.2 Penalized Cox (glmnet) ---\n")
+  
+  set.seed(123)
+  cv_cox_en <- cv.glmnet(
+    x      = x_train,
+    y      = y_train,
+    family = "cox",
+    alpha  = 0.5,     # 0.5 = elastic net; 1 = lasso, 0 = ridge
+    nfolds = 5
+  )
+  
+  # Plot CV curve (optional, comment out in non-interactive runs)
+  # plot(cv_cox_en)
+  
+  lambda_min  <- cv_cox_en$lambda.min
+  lambda_1se  <- cv_cox_en$lambda.1se
+  
+  cat("lambda.min:", lambda_min, "\n")
+  cat("lambda.1se:", lambda_1se, "\n")
+  
+  # Coefficients at lambda.min and lambda.1se
+  coef_min  <- coef(cv_cox_en, s = "lambda.min")
+  coef_1se  <- coef(cv_cox_en, s = "lambda.1se")
+  
+  cat("\nNon-zero coefficients at lambda.min:\n")
+  print(coef_min[coef_min != 0])
+  
+  cat("\nNon-zero coefficients at lambda.1se:\n")
+  print(coef_1se[coef_1se != 0])
+  
+  # Test-set concordance for penalized Cox (lambda.min)
+  lp_test_glmnet <- as.numeric(
+    predict(cv_cox_en, newx = x_test, s = "lambda.min", type = "link")
+  )
+  
+  conc_glmnet <- survConcordance(y_test ~ lp_test_glmnet)
+  cat("\nPenalized Cox (glmnet) concordance on test set:\n")
+  print(conc_glmnet)
+  
+  # ----------------------------------------------------------------------
+  # 10.3 Classical Cox vs penalized Cox: comparison on same test set
+  # ----------------------------------------------------------------------
+  
+  cat("\n--- 10.3 Classical vs Penalized Cox ---\n")
+  
+  cox_static_baseline <- coxph(
+    Surv(career_length, event) ~
+      position_simple +
+      debut_age_num +
+      height_clean +
+      region +
+      National_team +
+      foot_clean +
+      injuries_per_season,
+    data = surv_df_liga
+  )
+  
+  lp_cox_test <- predict(
+    cox_static_baseline,
+    newdata = surv_df_liga[test_idx, ],
+    type = "lp"
+  )
+  
+  conc_cox <- survConcordance(y_test ~ lp_cox_test)
+  
+  cat("\nClassical Cox concordance on test set:\n")
+  print(conc_cox)
+  
+  # Quick comparison table
+  cox_glmnet_comp <- data.frame(
+    Model        = c("Classical Cox", "Penalized Cox (glmnet)"),
+    Concordance  = c(conc_cox$concordance, conc_glmnet$concordance),
+    SE           = c(conc_cox$std.err,     conc_glmnet$std.err)
+  )
+  
+  print(cox_glmnet_comp)
+  
+  # ----------------------------------------------------------------------
+  # 11.4 Random forest regression for career length (baseline only)
+  # ----------------------------------------------------------------------
+  
+  cat("\n--- 10.4 Random Forest Regression (career_length) ---\n")
+  
+  # Use same baseline variables but treat career_length as continuous outcome
+  reg_data <- surv_df_liga %>%
+    dplyr::select(
+      career_length,
+      position_simple,
+      debut_age_num,
+      height_clean,
+      region,
+      National_team,
+      foot_clean,
+      injuries_per_season
+    )
+  
+  set.seed(123)
+  n_reg         <- nrow(reg_data)
+  train_idx_reg <- sample(seq_len(n_reg), size = floor(0.7 * n_reg))
+  test_idx_reg  <- setdiff(seq_len(n_reg), train_idx_reg)
+  
+  reg_train <- reg_data[train_idx_reg, ]
+  reg_test  <- reg_data[test_idx_reg, ]
+  
+  rf_reg_baseline <- randomForest(
+    career_length ~ .,
+    data       = reg_train,
+    ntree      = 500,
+    mtry       = floor(sqrt(ncol(reg_train) - 1)),
+    importance = TRUE
+  )
+  
+  print(rf_reg_baseline)
+  
+  pred_len <- predict(rf_reg_baseline, newdata = reg_test)
+  rmse     <- sqrt(mean((pred_len - reg_test$career_length)^2))
+  
+  cat("\nRandom forest RMSE on test set:", rmse, "\n")
+  
+  cat("\nRandom forest variable importance:\n")
+  print(importance(rf_reg_baseline))
+  
+  # Optional: plot importance (comment out in non-interactive environments)
+  # varImpPlot(rf_reg_baseline)
+  
+  # ----------------------------------------------------------------------
+  # 10.5 Summary message for Section 10
+  # ----------------------------------------------------------------------
+  
+  cat("\nSection 10 summary:\n")
+  cat("- Penalized Cox (glmnet) identifies key baseline covariates with non-zero hazard effects.\n")
+  cat("- Classical Cox and penalized Cox are compared via concordance on the same test set.\n")
+  cat("- Random forest regression quantifies how well baseline covariates predict total career length.\n")
+  
+  
+  # ==============================================================================
+  # SECTION 12: Robustness Checks for Baseline ML Models
+  # ==============================================================================
+  
+  cat("\n--- SECTION 11: Robustness Checks (Repeated Splits) ---\n")
+  
+  library(glmnet)
+  library(randomForest)
+  library(survival)
+  
+  n_reps <- 5
+  
+  # Use NA-initialized vectors so we can see which reps failed
+  conc_vals <- rep(NA_real_, n_reps)   # penalized Cox concordance
+  rmse_vals <- rep(NA_real_, n_reps)   # RF RMSE
+  var_exp   <- rep(NA_real_, n_reps)   # RF % variance explained
+  
+  set.seed(456)
+  
+  for (r in seq_len(n_reps)) {
+    cat("\nReplication", r, "of", n_reps, "\n")
+    
+    # ----------------------------
+    # 11.1 Train/test split by player
+    # ----------------------------
+    player_ids <- surv_df_liga$player_url
+    unique_ids <- unique(player_ids)
+    
+    train_ids <- sample(unique_ids, size = floor(0.7 * length(unique_ids)))
+    train_idx <- player_ids %in% train_ids
+    test_idx  <- !train_idx
+    
+    # Skip iteration if either side is empty
+    if (!any(train_idx) || !any(test_idx)) {
+      cat("  Warning: empty train or test set in this split; skipping.\n")
+      next
+    }
+    
+    # Baseline covariates and response
+    y_surv <- with(surv_df_liga, Surv(time = career_length, event = event))
+    
+    x_vars <- surv_df_liga %>%
+      dplyr::select(
+        position_simple,
+        debut_age_num,
+        height_clean,
+        region,
+        National_team,
+        foot_clean,
+        injuries_per_season
+      )
+    
+    x_mat <- model.matrix(~ . , data = x_vars)[, -1]
+    
+    x_train <- x_mat[train_idx, , drop = FALSE]
+    x_test  <- x_mat[test_idx,  , drop = FALSE]
+    y_train <- y_surv[train_idx]
+    y_test  <- y_surv[test_idx]
+    
+    # ----------------------------
+    # 11.2 Penalized Cox (glmnet) on this split
+    # ----------------------------
+    # Wrap in tryCatch so a failure doesn't break the loop
+    conc_val_r <- tryCatch({
+      cv_cox_en <- cv.glmnet(
+        x      = x_train,
+        y      = y_train,
+        family = "cox",
+        alpha  = 0.5,
+        nfolds = 5
+      )
+      
+      lp_test_glmnet <- as.numeric(
+        predict(cv_cox_en, newx = x_test, s = "lambda.min", type = "link")
+      )
+      
+      conc_glmnet <- concordance(y_test ~ lp_test_glmnet)
+      cat("  Penalized Cox concordance:", conc_glmnet$concordance, "\n")
+      conc_glmnet$concordance
+    }, error = function(e) {
+      cat("  Penalized Cox failed in this split:", conditionMessage(e), "\n")
+      NA_real_
+    })
+    
+    conc_vals[r] <- conc_val_r
+    
+    # ----------------------------
+    # 11.3 Random forest regression on this split
+    # ----------------------------
+    rmse_r <- tryCatch({
+      reg_data <- surv_df_liga %>%
+        dplyr::select(
+          career_length,
+          position_simple,
+          debut_age_num,
+          height_clean,
+          region,
+          National_team,
+          foot_clean,
+          injuries_per_season
+        )
+      
+      reg_train <- reg_data[train_idx, ]
+      reg_test  <- reg_data[test_idx, ]
+      
+      rf_reg <- randomForest(
+        career_length ~ .,
+        data       = reg_train,
+        ntree      = 500,
+        mtry       = floor(sqrt(ncol(reg_train) - 1)),
+        importance = FALSE
+      )
+      
+      pred_len <- predict(rf_reg, newdata = reg_test)
+      rmse_r   <- sqrt(mean((pred_len - reg_test$career_length)^2))
+      var_r    <- rf_reg$rsq[rf_reg$ntree] * 100
+      
+      cat("  RF RMSE:", rmse_r, " | % Var explained:", var_r, "\n")
+      
+      rmse_vals[r] <- rmse_r
+      var_exp[r]   <- var_r
+      rmse_r
+    }, error = function(e) {
+      cat("  RF regression failed in this split:", conditionMessage(e), "\n")
+      NA_real_
+    })
+  }
+  
+  # ----------------------------
+  # 12.4 Summary of robustness checks
+  # ----------------------------
+  
+  cat("\n--- Section 11 summary ---\n")
+  
+  valid_conc <- conc_vals[!is.na(conc_vals)]
+  valid_rmse <- rmse_vals[!is.na(rmse_vals)]
+  valid_var  <- var_exp[!is.na(var_exp)]
+  
+  cat("\nPenalized Cox (glmnet) concordance (valid splits):\n")
+  print(valid_conc)
+  if (length(valid_conc) > 0) {
+    cat("Mean concordance:", mean(valid_conc), "\n")
+    cat("SD concordance:",   sd(valid_conc),   "\n")
+  } else {
+    cat("No valid concordance values (all splits failed).\n")
+  }
+  
+  cat("\nRandom forest RMSE (valid splits):\n")
+  print(valid_rmse)
+  if (length(valid_rmse) > 0) {
+    cat("Mean RMSE:", mean(valid_rmse), "\n")
+    cat("SD RMSE:",   sd(valid_rmse),   "\n")
+  } else {
+    cat("No valid RMSE values (all splits failed).\n")
+  }
+  
+  cat("\nRandom forest % variance explained (valid splits):\n")
+  print(valid_var)
+  if (length(valid_var) > 0) {
+    cat("Mean %Var explained:", mean(valid_var), "\n")
+    cat("SD %Var explained:",   sd(valid_var),   "\n")
+  } else {
+    cat("No valid %Var values (all splits failed).\n")
+  }
+  
+  cat("\nNote: NA values indicate splits where the model failed or the split was empty.\n")
+  
+
+  
